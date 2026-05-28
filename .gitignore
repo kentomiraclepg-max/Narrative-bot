@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Environment — JANGAN commit token/secret
+.env
+.env.*
+*.key
+
+# Data runtime (SQLite, cache, knowledge graph) — regenerated tiap run
+data/
+
+# Logs
+logs/
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# Editors
+.vscode/
+.idea/
+*.swp

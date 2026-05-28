@@ -1,0 +1,71 @@
+name: Narrative Scan
+
+on:
+  schedule:
+    - cron: '0 22 * * *'   # 05:00 WIB (UTC+7) setiap hari
+  workflow_dispatch:        # Bisa dijalankan manual dari GitHub UI
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Python setup ──────────────────────────────────────────────────────
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # ── 3. Cache pip packages ────────────────────────────────────────────────
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      # ── 4. Cache HuggingFace models (FinBERT ~500MB, sentence-transformers ~90MB)
+      - name: Cache HuggingFace models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: ${{ runner.os }}-hf-finbert-minilm-v1
+
+      # ── 5. Install dependencies ──────────────────────────────────────────────
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      # ── 6. Download spaCy model ──────────────────────────────────────────────
+      - name: Download spaCy en_core_web_lg
+        run: |
+          python -m spacy download en_core_web_lg
+
+      # ── 7. Prepare runtime directories ──────────────────────────────────────
+      - name: Create data directories
+        run: mkdir -p data/graphs data/cache reports logs
+
+      # ── 8. Run single narrative scan ─────────────────────────────────────────
+      - name: Run narrative scan (--once)
+        env:
+          REDDIT_CLIENT_ID:     ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+          REDDIT_USER_AGENT:    ${{ secrets.REDDIT_USER_AGENT }}
+          NOTION_TOKEN:         ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID:   ${{ secrets.NOTION_DATABASE_ID }}
+          TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python agent.py --once
+
+      # ── 9. Save report as GitHub artifact (backup 30 hari) ───────────────────
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: narrative-report-${{ github.run_id }}
+          path: reports/
+          retention-days: 30
