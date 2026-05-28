@@ -148,6 +148,16 @@ def get_sentiment(text: str) -> dict:
     else:
         label = "neutral"
 
+    # Fix 4: dampen score if article uses contrarian framing
+    ensemble_score = _contrarian_adjust(text, ensemble_score)
+
+    if ensemble_score > 0.05:
+        label = "positive"
+    elif ensemble_score < -0.05:
+        label = "negative"
+    else:
+        label = "neutral"
+
     return {
         "label":      label,
         "score":      round(ensemble_score, 4),
@@ -399,3 +409,25 @@ def _clean(text: str) -> str:
     text = re.sub(r"http\S+", "", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+
+# ── Fix 4: Contrarian phrase detector ────────────────────────────────────────
+# These phrases signal the article's argument runs OPPOSITE to its surface
+# sentiment. e.g. "Gold's Collapse Is Ignoring The Recession" — FinBERT reads
+# "collapse" as bearish, but the author argues the opposite.
+# For TOPICAL themes (where signed sentiment is used directly) this matters.
+# EVENT themes already use |sent| so they're unaffected.
+_CONTRARIAN_PHRASES = (
+    "ignoring", "is wrong about", "underestimat", "overestimat",
+    "contrary to", "despite", "argues against", "don't believe",
+    "is not the reason", "misread", "mispriced", "mispricing",
+    "the market is missing", "overlooking", "overlooked",
+)
+
+def _contrarian_adjust(text: str, score: float) -> float:
+    """Dampen sentiment score by 50% if contrarian framing is detected.
+    Avoids over-steering on articles where FinBERT reads the wrong direction."""
+    t = text.lower()
+    if any(p in t for p in _CONTRARIAN_PHRASES):
+        return round(score * 0.5, 4)
+    return score

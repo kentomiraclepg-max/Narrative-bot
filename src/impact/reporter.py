@@ -92,6 +92,98 @@ def _emoji_for(label: str) -> str:
     return {"BULLISH": "▲", "BEARISH": "▼", "NEUTRAL": "■"}.get(label, "■")
 
 
+# ── Narrative summary generator ───────────────────────────────────────────────
+
+_THEME_LABELS: dict[str, str] = {
+    "rate_hike":      "Fed rate hike",
+    "rate_cut":       "Fed rate cut",
+    "inflation":      "inflation pressure",
+    "recession":      "recession fears",
+    "earnings":       "earnings season",
+    "geopolitical":   "geopolitical tensions",
+    "liquidity":      "liquidity/credit risk",
+    "supply_chain":   "supply chain disruption",
+    "currency":       "currency moves",
+    "bi_rate":        "BI rate policy",
+    "ihsg":           "IHSG movement",
+    "rupiah":         "Rupiah movement",
+    "commodity":      "commodity prices",
+    "ai_tech":        "AI/tech developments",
+    "oil_price":      "oil prices",
+    "ojk_regulation": "OJK regulation",
+    "bbm_harga":      "fuel price (BBM)",
+    "us_debt":        "US debt/fiscal",
+    "etf_flows":      "crypto ETF flows",
+    "regulation":     "crypto regulation",
+    "hack_exploit":   "hack/exploit incident",
+    "halving":        "Bitcoin halving",
+    "stablecoin":     "stablecoin volatility",
+}
+
+
+def _narrative_summary(asset: str, result: dict, drivers: list[dict]) -> str:
+    """Generate a human-readable 2-3 sentence narrative for an asset."""
+    if not drivers:
+        return "_No significant news signals detected._"
+
+    label    = result["label"]
+    score    = result["score"]
+    n_themes = len(drivers)
+
+    bullish = [d for d in drivers if d["contribution"] > 0]
+    bearish = [d for d in drivers if d["contribution"] < 0]
+
+    main_side  = bullish if label == "BULLISH" else bearish if label == "BEARISH" else drivers
+    other_side = bearish if label == "BULLISH" else bullish if label == "BEARISH" else []
+
+    def _driver_desc(d: dict) -> str:
+        theme   = _THEME_LABELS.get(d["theme"], d["theme"].replace("_", " "))
+        n       = d["n_articles"]
+        title   = (d.get("top_title") or "").strip()
+        source  = d.get("top_source", "")
+        snippet = f' — "{title[:65]}..."' if title else ""
+        src_ref = f" ({source})" if source else ""
+        art_str = f"{n} article{'s' if n != 1 else ''}{snippet}{src_ref}"
+        return f"**{theme}** [{art_str}]"
+
+    sentences: list[str] = []
+
+    # Sentence 1 — main direction
+    if main_side:
+        top = main_side[0]
+        direction_word = (
+            "Primary bullish driver" if label == "BULLISH" else
+            "Primary bearish driver" if label == "BEARISH" else
+            "Strongest signal"
+        )
+        sentences.append(f"{direction_word}: {_driver_desc(top)}.")
+
+    # Sentence 2 — secondary main drivers
+    if len(main_side) >= 2:
+        secondary = [_driver_desc(d) for d in main_side[1:3]]
+        sentences.append(f"Reinforced by {' and '.join(secondary)}.")
+
+    # Sentence 3 — counter narrative
+    if other_side:
+        top_other = other_side[0]
+        counter_word = "Headwind" if label == "BULLISH" else "Partial support"
+        sentences.append(
+            f"{counter_word}: {_driver_desc(top_other)} "
+            f"({'dampening' if label == 'BULLISH' else 'supporting'} "
+            f"{'bullish' if label == 'BULLISH' else 'bearish'} bias)."
+        )
+
+    # If pure neutral with mixed signals
+    if label == "NEUTRAL" and bullish and bearish:
+        sentences = [
+            f"Conflicting signals — {_driver_desc(bullish[0])} "
+            f"offset by {_driver_desc(bearish[0])}.",
+            f"Balance of {n_themes} themes yields neutral bias (score {score:+.3f}).",
+        ]
+
+    return " ".join(sentences)
+
+
 # ── Renderer ─────────────────────────────────────────────────────────────────
 def render_report(scored: dict[str, dict],
                   articles: list[dict],
@@ -153,10 +245,13 @@ def render_report(scored: dict[str, dict],
             continue
         lines.append(f"### {_emoji_for(r['label'])} {ASSET_LABELS.get(asset, asset)}")
         lines.append("")
+        drivers = summarize_drivers(r, top=5)
+        # Narrative summary — human-readable interpretation of drivers
+        lines.append(f"> {_narrative_summary(asset, r, r.get('drivers', []))}")
+        lines.append("")
         lines.append(f"- **Bias:** {r['label']} ({r['strength']})")
         lines.append(f"- **Score:** `{r['score']:+.3f}` `{_bar(r['score'])}`")
         lines.append(f"- **Signals:** {r['n_signals']}")
-        drivers = summarize_drivers(r, top=5)
         if drivers:
             lines.append("- **Top drivers:**")
             for d in drivers:

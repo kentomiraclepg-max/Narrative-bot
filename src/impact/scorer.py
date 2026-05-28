@@ -24,6 +24,23 @@ from typing import Any
 
 from src.impact.asset_map import ASSETS, THEME_IMPACT
 
+# ── Fix 1 & 2: Theme-level market filter ─────────────────────────────────────
+# Prevents cross-market contamination (e.g. CoinDesk NEAR article driving IHSG,
+# Nvidia article driving Gold via geopolitical theme).
+# Themes not listed here accept articles from ALL markets.
+THEME_MARKET_FILTER: dict[str, frozenset] = {
+    "ihsg":           frozenset({"IDX", "GLOBAL"}),
+    "bi_rate":        frozenset({"IDX", "GLOBAL"}),
+    "rupiah":         frozenset({"IDX", "GLOBAL"}),
+    "ojk_regulation": frozenset({"IDX"}),
+    "bbm_harga":      frozenset({"IDX"}),
+    "etf_flows":      frozenset({"CRYPTO", "GLOBAL"}),
+    "hack_exploit":   frozenset({"CRYPTO", "GLOBAL"}),
+    "regulation":     frozenset({"CRYPTO", "GLOBAL"}),
+    "halving":        frozenset({"CRYPTO", "GLOBAL"}),
+    "stablecoin":     frozenset({"CRYPTO", "GLOBAL"}),
+}
+
 # ── Theme classification ──────────────────────────────────────────────────────
 # EVENT_THEMES: directional impact is fixed by the weight in asset_map.
 # The article may frame it positively ("gold climbs because of geopolitics")
@@ -52,9 +69,14 @@ def _tier_boost(tier: int | None) -> float:
     return {1: 1.0, 2: 0.85, 3: 0.7}.get(tier or 3, 0.7)
 
 
-def _volume_factor(n: int) -> float:
-    """Logarithmic volume weight: 1 article → ~0.25, 15 → 1.0, 30 → capped."""
-    return min(1.0, math.log2(1 + n) / math.log2(1 + _VOLUME_REFERENCE))
+def _volume_factor(n: int, intensity: float = 0.0) -> float:
+    """Logarithmic volume weight: 1 article → ~0.25, 15 → 1.0, 30 → capped.
+    Fix 3: extra dampening when n ≤ 2 and intensity is high — guards against
+    single-source outlier bias (one extreme headline ≠ market consensus)."""
+    base = min(1.0, math.log2(1 + n) / math.log2(1 + _VOLUME_REFERENCE))
+    if n <= 2 and abs(intensity) > 0.5:
+        base *= 0.55   # reduce outlier contribution by ~45%
+    return base
 
 
 def _classify_strength(abs_score: float) -> str:
@@ -75,10 +97,16 @@ def _classify_label(score: float) -> str:
     return "NEUTRAL"
 
 
-def _top_article(arts: list[dict]) -> dict:
-    """Return the highest-credibility article as the theme representative."""
-    return max(arts, key=lambda a: float(a.get("credibility") or 0.0),
-               default={})
+def _top_article(arts: list[dict], prefer_market: str | None = None) -> dict:
+    """Return the most representative article for a theme.
+    Fix 1 & 2: When a preferred market is given (e.g. 'IDX' for ihsg theme),
+    boost market-matching articles so a NEAR/CoinDesk article doesn't surface
+    as the representative driver of IHSG."""
+    def _rank(a: dict) -> float:
+        cred = float(a.get("credibility") or 0.0)
+        market_match = 1.2 if (prefer_market and a.get("market") == prefer_market) else 1.0
+        return cred * market_match
+    return max(arts, key=_rank, default={})
 
 
 def score_assets(articles: list[dict],
@@ -94,12 +122,17 @@ def score_assets(articles: list[dict],
     """
     targets = assets or ASSETS
 
-    # ── Step 1: Group articles by theme ──────────────────────────────────────
+    # ── Step 1: Group articles by theme (with market filter) ─────────────────
     theme_buckets: dict[str, list[dict]] = defaultdict(list)
     for art in articles:
+        art_market = art.get("market", "GLOBAL")
         for theme in (art.get("macro_themes") or []):
-            if theme in THEME_IMPACT:
-                theme_buckets[theme].append(art)
+            if theme not in THEME_IMPACT:
+                continue
+            allowed = THEME_MARKET_FILTER.get(theme)
+            if allowed is not None and art_market not in allowed:
+                continue   # Fix 1 & 2: skip cross-market contamination
+            theme_buckets[theme].append(art)
 
     # ── Step 2: Per-theme aggregate signal ───────────────────────────────────
     theme_signals: dict[str, dict] = {}
@@ -122,6 +155,8 @@ def score_assets(articles: list[dict],
         else:
             intensity = avg_sent
 
+        vf = _volume_factor(n, intensity)   # Fix 3: pass intensity for outlier check
+
         theme_signals[theme] = {
             "intensity":     intensity,
             "avg_conf":      avg_conf,
@@ -141,7 +176,10 @@ def score_assets(articles: list[dict],
             if w == 0.0:
                 continue
             contrib = w * sig["intensity"] * sig["avg_conf"] * sig["volume_factor"]
-            top     = _top_article(sig["articles"])
+            # Fix 1 & 2: prefer market-matching article as representative driver
+            preferred = THEME_MARKET_FILTER.get(theme)
+            pref_mkt  = next(iter(preferred), None) if preferred else None
+            top       = _top_article(sig["articles"], prefer_market=pref_mkt)
             per_asset_drivers[asset].append({
                 "theme":        theme,
                 "contribution": round(contrib, 4),
